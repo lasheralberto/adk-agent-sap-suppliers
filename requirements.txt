@@ -1,0 +1,8 @@
+Flask
+python-dotenv
+firebase-admin
+flask-cors
+Flask-RESTful
+requests 
+litellm
+openai
