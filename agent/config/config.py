@@ -22,7 +22,6 @@ _configure_vertex_backend()
 
 # ─── Load skills ──────────────────────────────────────────────────────────────
 code_programmer_skill = load_skill_from_dir(_SKILLS_DIR / "code-programmer")
-code_reviewer_skill = load_skill_from_dir(_SKILLS_DIR / "code-reviewer")
 answer_agent_skill = load_skill_from_dir(_SKILLS_DIR / "answer-agent")
 orchestrator_skill = load_skill_from_dir(_SKILLS_DIR / "orchestrator")
 generic_scripts_skill = load_skill_from_dir(_SKILLS_DIR / "script-execution")
@@ -30,17 +29,23 @@ script_generator_skill = load_skill_from_dir(_SKILLS_DIR / "script-generator")
 memory_agent_skill = load_skill_from_dir(_SKILLS_DIR / "memory-agent")
 
 
-def get_llm_provider() -> LiteLlm:
-    provider = os.getenv("LLM_PROVIDER").lower()
+def get_llm_provider(llm_provider: str | None = None, model_name: str | None = None) -> LiteLlm:
+    provider = (llm_provider or os.getenv("LLM_PROVIDER") or "").strip().lower()
     if provider not in {"google", "azure", "openai"}:
         raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
     if provider == "google":
-        os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
-        model = LiteLlm(model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+        api_key = os.getenv("GOOGLE_API_KEY", "")
+        if api_key:
+            os.environ["GOOGLE_API_KEY"] = api_key
+        selected_model = (model_name or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+        model = LiteLlm(model=selected_model)
     elif provider == "openai":
-        os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
-        model = LiteLlm(model=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"))
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
+        selected_model = (model_name or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo").strip()
+        model = LiteLlm(model=selected_model)
     else:
         raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
