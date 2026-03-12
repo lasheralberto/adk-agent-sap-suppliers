@@ -53,6 +53,53 @@ def _extract_text(content: object) -> str:
     return "\n".join(chunks).strip()
 
 
+def _normalize_tool_call_record(record: object, fallback_agent: object | None = None) -> dict[str, object] | None:
+    if not isinstance(record, dict):
+        return None
+
+    tool = record.get("tool") or record.get("name")
+    if not tool:
+        return None
+
+    normalized: dict[str, object] = {"tool": _to_plain_value(tool)}
+
+    agent = record.get("agent") or record.get("author") or fallback_agent
+    if agent:
+        normalized["agent"] = _to_plain_value(agent)
+
+    args = record.get("args")
+    if args is None:
+        args = record.get("arguments")
+    if args is not None:
+        normalized["args"] = _to_plain_value(args)
+
+    return normalized
+
+
+def _extract_nested_tool_calls(value: object, fallback_agent: object | None = None) -> list[dict[str, object]]:
+    nested_calls: list[dict[str, object]] = []
+
+    if isinstance(value, dict):
+        candidate = _normalize_tool_call_record(value, fallback_agent)
+        if candidate:
+            nested_calls.append(candidate)
+
+        embedded = value.get("tool_calls")
+        if isinstance(embedded, list):
+            for item in embedded:
+                nested_calls.extend(_extract_nested_tool_calls(item, fallback_agent))
+
+        for nested_value in value.values():
+            if isinstance(nested_value, (dict, list)):
+                nested_calls.extend(_extract_nested_tool_calls(nested_value, fallback_agent))
+
+    elif isinstance(value, list):
+        for item in value:
+            nested_calls.extend(_extract_nested_tool_calls(item, fallback_agent))
+
+    return nested_calls
+
+
 def _extract_tool_calls(content: object, event: object | None = None) -> list[dict[str, object]]:
     if not content or not getattr(content, "parts", None):
         return []
@@ -63,6 +110,18 @@ def _extract_tool_calls(content: object, event: object | None = None) -> list[di
     for part in content.parts:
         function_call = getattr(part, "function_call", None)
         if not function_call:
+            function_response = getattr(part, "function_response", None)
+            if not function_response:
+                continue
+
+            response_payload = (
+                _to_plain_value(getattr(function_response, "response", None))
+                or _to_plain_value(getattr(function_response, "output", None))
+                or _to_plain_value(getattr(function_response, "result", None))
+                or _to_plain_value(getattr(function_response, "content", None))
+            )
+            if response_payload is not None:
+                calls.extend(_extract_nested_tool_calls(response_payload, fallback_agent=author))
             continue
 
         tool_name = _to_plain_value(getattr(function_call, "name", None))

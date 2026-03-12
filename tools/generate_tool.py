@@ -3,6 +3,7 @@ import re
 
 from dotenv import load_dotenv
 from google import genai
+from openai import OpenAI
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -39,29 +40,39 @@ def _extract_text_parts(response: object) -> str:
     return "\n".join(texts).strip()
 
 
-def generate_script_with_genai(question: str, model: str | None = None) -> str:
-    """Generate Python code from user question using GenAI and return code as plain string."""
+def generate_script(question: str, model: str | None = None) -> str:
+    """Generate Python code from user question using chosen LLM and return code as plain string."""
     if not question or not question.strip():
         raise ValueError("question cannot be empty")
 
     load_dotenv()
-    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    provider = os.getenv("LLM_PROVIDER", "google").lower()
 
-    project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("PROJECT_ID")
-    location = os.getenv("GOOGLE_CLOUD_LOCATION") or os.getenv("LOCATION")
-    model_name = model or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+    if provider == "openai":
+        model_name = model or os.getenv("OPENAI_MODEL") or "gpt-5.4"
+        client = OpenAI()
+        response = client.responses.create(
+            model=model_name,
+            input=_build_generation_prompt(question),
+            reasoning={"effort": "high"},
+        )
+        raw_text = response.output_text
+    else:
+        # Default to google/genai
+        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        model_name = model or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
 
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if api_key:
-        os.environ["GEMINI_API_KEY"] = api_key
-    client = genai.Client()
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+        client = genai.Client()
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=_build_generation_prompt(question),
-    )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=_build_generation_prompt(question),
+        )
+        raw_text = _extract_text_parts(response)
 
-    raw_text = _extract_text_parts(response)
     script_source = _strip_markdown_fences(raw_text)
     if not script_source:
         raise ValueError("Model returned empty script source")

@@ -14,8 +14,11 @@ from agent.config.config import (
     script_generator_skill,
     memory_agent_skill,
     intent_router_skill,
+    sd_agent_skill,
+    fi_agent_skill,
+    sap_technical_skill,
 )
-from tools.generate_tool import generate_script_with_genai
+from tools.generate_tool import generate_script
 from tools.memory_agent_tool import retrieve_memory_context, save_interaction_memory
 from tools.sandbox_gcp_tool import run_in_sandbox_gcp
 from tools.script_execution_tool import execute_inline_script, execute_project_script, list_project_scripts
@@ -43,7 +46,7 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         name="script_generator_agent",
         model=selected_model,
         instruction=script_generator_skill.instructions,
-        tools=[list_project_scripts, generate_script_with_genai, execute_inline_script, script_executor],
+        tools=[list_project_scripts, generate_script, execute_inline_script, script_executor],
     ))
 
     code_programmer = LlmAgent(
@@ -60,11 +63,30 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         ],
     )
 
+    # ─── Specialist Functional / Technical Agents ──────────────────────────────
+    sd_agent = LlmAgent(
+        name="sd_agent",
+        model=selected_model,
+        instruction=sd_agent_skill.instructions,
+    )
+
+    fi_agent = LlmAgent(
+        name="fi_agent",
+        model=selected_model,
+        instruction=fi_agent_skill.instructions,
+    )
+
+    sap_technical_agent = LlmAgent(
+        name="sap_technical_agent",
+        model=selected_model,
+        instruction=sap_technical_skill.instructions,
+    )
+
     # ─── Answer Agent ────────────────────────────────────────────────────────────
     answer_agent = LlmAgent(
         name="answer_agent",
         model=selected_model,
-        instruction=answer_agent_skill.instructions,
+        instruction=answer_agent_skill.instructions
     )
 
     memory_agent = LlmAgent(
@@ -74,17 +96,21 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         tools=[retrieve_memory_context, save_interaction_memory],
     )
 
+
+
     # ─── Orchestrator ─────────────────────────────────────────────────────────────
     return LlmAgent(
-        name="orchestrator",
-        model=selected_model,
-        instruction=orchestrator_skill.instructions,
-        tools=[
-            AgentTool(agent=intent_router),
-            #AgentTool(agent=memory_agent),
-            AgentTool(agent=code_programmer),
-            AgentTool(agent=answer_agent),
-        ],
+    name="orchestrator",
+    model=selected_model,
+    instruction=orchestrator_skill.instructions,
+    tools=[
+        AgentTool(agent=intent_router),
+        AgentTool(agent=code_programmer),
+        AgentTool(agent=sd_agent),          # ← directo al orchestrator
+        AgentTool(agent=fi_agent),          # ← directo al orchestrator
+        AgentTool(agent=sap_technical_agent), # ← directo al orchestrator
+        AgentTool(agent=answer_agent),      # solo para respuestas generales
+    ],
     )
 
 
