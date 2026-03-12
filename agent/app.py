@@ -13,6 +13,7 @@ from agent.config.config import (
     generic_scripts_skill,
     script_generator_skill,
     memory_agent_skill,
+    intent_router_skill,
 )
 from tools.generate_tool import generate_script_with_genai
 from tools.memory_agent_tool import retrieve_memory_context, save_interaction_memory
@@ -22,6 +23,12 @@ from tools.script_execution_tool import execute_inline_script, execute_project_s
 
 def build_orchestrator(llm_provider: str | None = None, model_name: str | None = None) -> LlmAgent:
     selected_model = get_llm_provider(llm_provider=llm_provider, model_name=model_name)
+
+    intent_router = LlmAgent(
+        name="intent_router",
+        model=selected_model,
+        instruction=intent_router_skill.instructions,
+    )
 
     # ─── Code Programmer Agent ───────────────────────────────────────────────────
     script_executor_agent = LlmAgent(
@@ -73,6 +80,7 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         model=selected_model,
         instruction=orchestrator_skill.instructions,
         tools=[
+            AgentTool(agent=intent_router),
             AgentTool(agent=memory_agent),
             AgentTool(agent=code_programmer),
             AgentTool(agent=answer_agent),

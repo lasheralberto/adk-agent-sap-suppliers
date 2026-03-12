@@ -27,6 +27,7 @@ orchestrator_skill = load_skill_from_dir(_SKILLS_DIR / "orchestrator")
 generic_scripts_skill = load_skill_from_dir(_SKILLS_DIR / "script-execution")
 script_generator_skill = load_skill_from_dir(_SKILLS_DIR / "script-generator")
 memory_agent_skill = load_skill_from_dir(_SKILLS_DIR / "memory-agent")
+intent_router_skill = load_skill_from_dir(_SKILLS_DIR / "intent-router")
 
 
 def get_llm_provider(llm_provider: str | None = None, model_name: str | None = None) -> LiteLlm:
