@@ -7,3 +7,4 @@ requests
 litellm
 openai
 gunicorn
+google-adk
