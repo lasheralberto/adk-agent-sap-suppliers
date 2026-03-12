@@ -81,7 +81,7 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         instruction=orchestrator_skill.instructions,
         tools=[
             AgentTool(agent=intent_router),
-            AgentTool(agent=memory_agent),
+            #AgentTool(agent=memory_agent),
             AgentTool(agent=code_programmer),
             AgentTool(agent=answer_agent),
         ],
