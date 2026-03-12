@@ -1,4 +1,4 @@
-from tools.openai.memory_store import retrieve_similar_memories, save_memory
+from tools.memory.memory_store import retrieve_similar_memories, save_memory
 
 
 def retrieve_memory_context(question: str, top_k: int = 3) -> str:
@@ -29,7 +29,7 @@ def retrieve_memory_context(question: str, top_k: int = 3) -> str:
 
 
 def save_interaction_memory(question: str, final_answer: str) -> str:
-    """Persist a concise conversation memory in OpenAI Vector Store."""
+    """Persist a concise conversation memory using the configured memory provider."""
     if not question or not question.strip() or not final_answer or not final_answer.strip():
         return "memory_saved=false reason=empty_input"
 

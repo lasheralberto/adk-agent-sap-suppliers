@@ -20,6 +20,11 @@ def _configure_vertex_backend() -> None:
 
 _configure_vertex_backend()
 
+# Memory provider configuration
+MEMORY_PROVIDER = os.getenv("MEMORY_PROVIDER", "inmemory")
+REDIS_URL = os.getenv("REDIS_URL", "")
+SQLITE_MEMORY_DB_PATH = os.getenv("SQLITE_MEMORY_DB_PATH", ":memory:")
+
 # ─── Load skills ──────────────────────────────────────────────────────────────
 code_programmer_skill = load_skill_from_dir(_SKILLS_DIR / "code-programmer")
 answer_agent_skill = load_skill_from_dir(_SKILLS_DIR / "answer-agent")

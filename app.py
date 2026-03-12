@@ -14,6 +14,8 @@ from agent.runner import run_agent, run_agent_streaming
 app = Flask(__name__)
 CORS(app)
 
+HEARTBEAT_INTERVAL_SECONDS = 5
+
 
 @app.get("/health")
 def health() -> tuple[dict, int]:
@@ -41,8 +43,13 @@ def _stream_generator(question: str, agent: object) -> Generator[str, None, None
 
     threading.Thread(target=lambda: asyncio.run(_consume()), daemon=True).start()
 
+    # Emit periodic heartbeat events so proxies/clients keep the stream open on long-running tasks.
     while True:
-        item = q.get()
+        try:
+            item = q.get(timeout=HEARTBEAT_INTERVAL_SECONDS)
+        except queue.Empty:
+            yield _sse({"response": "", "tool_calls": []}, event="heartbeat")
+            continue
         if item is _DONE:
             yield _sse({"response": "", "tool_calls": []}, event="done")
             break
@@ -96,3 +103,7 @@ def ask_agent() -> Response | tuple[dict, int]:
 
     result = asyncio.run(run_agent(question.strip(), orchestrator))
     return jsonify(result)
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=True)

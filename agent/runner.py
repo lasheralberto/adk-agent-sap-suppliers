@@ -10,6 +10,7 @@ from tools.script_execution_tool import maybe_execute_matching_script
 APP_NAME = "multi_agent_executor"
 USER_ID = "user1"
 _CODE_EXECUTION_AUTHORS = {"code_programmer", "generic_scripts_agent", "script_generator_agent"}
+_STREAM_CHUNK_SIZE = 180
 
 
 def _to_plain_value(value: object) -> object:
@@ -148,6 +149,31 @@ def _stringify_tool_output(value: object) -> str:
         except TypeError:
             return str(value).strip()
     return str(value).strip()
+
+
+def _split_stream_text(text: str, chunk_size: int = _STREAM_CHUNK_SIZE) -> list[str]:
+    if not text:
+        return []
+
+    cleaned = text
+    if len(cleaned) <= chunk_size:
+        return [cleaned]
+
+    chunks: list[str] = []
+    cursor = 0
+    text_len = len(cleaned)
+    while cursor < text_len:
+        end = min(cursor + chunk_size, text_len)
+        if end < text_len:
+            split_at = cleaned.rfind(" ", cursor, end)
+            if split_at > cursor + (chunk_size // 3):
+                end = split_at + 1
+        piece = cleaned[cursor:end]
+        if piece:
+            chunks.append(piece)
+        cursor = end
+
+    return chunks
 
 
 def _extract_tool_output_events(content: object, event: object | None = None) -> list[dict[str, str]]:
@@ -310,8 +336,20 @@ async def run_agent_streaming(question: str, agent: object):
             if streamed_messages:
                 payload["response"] = "\n\n".join(streamed_messages)
 
-            if payload:
+            if not payload:
+                continue
+
+            response_text = str(payload.get("response", ""))
+            if not response_text:
                 yield payload
+                continue
+
+            response_chunks = _split_stream_text(response_text)
+            for index, response_chunk in enumerate(response_chunks):
+                chunk_payload: dict[str, object] = {"response": response_chunk}
+                if index == 0 and payload.get("tool_calls"):
+                    chunk_payload["tool_calls"] = payload["tool_calls"]
+                yield chunk_payload
 
     got_response = False
     async for payload in _stream_attempt(prompt_text, session1_id):
