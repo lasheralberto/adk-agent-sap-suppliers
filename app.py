@@ -1,62 +1,151 @@
 import asyncio
 import json
+import os
 import queue
+import tempfile
 import threading
 from typing import Generator
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from agent.app import build_orchestrator
 from agent.runner import run_agent, run_agent_streaming
+from tools import vector_store
+from service.stream_utils import _sse, _stream_generator, _rag_stream_generator
 
+
+from openai import OpenAI
 
 app = Flask(__name__)
 CORS(app)
-
-HEARTBEAT_INTERVAL_SECONDS = 5
 
 
 @app.get("/health")
 def health() -> tuple[dict, int]:
     return {"status": "ok"}, 200
 
+# ================================
+# VECTOR STORES MANAGEMENT
+# ================================
 
-def _sse(data: dict[str, object], event: str = "chunk") -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+@app.get("/vector_stores")
+def list_vector_stores():
+    """List available vector stores in the OpenAI account."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return jsonify({"error": "OPENAI_API_KEY is not configured in environment"}), 500
 
+    client = OpenAI(api_key=api_key)
 
-def _stream_generator(question: str, agent: object) -> Generator[str, None, None]:
-    """Bridges the async run_agent_streaming generator into a sync Flask generator via queue."""
-    q: queue.Queue = queue.Queue()
-    _DONE = object()
-    _ERROR = object()
-
-    async def _consume() -> None:
+    def _as_plain_dict(value):
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        if hasattr(value, "to_dict"):
+            return value.to_dict()
         try:
-            async for chunk in run_agent_streaming(question, agent):
-                q.put(chunk)
-        except Exception as exc:  # noqa: BLE001
-            q.put((_ERROR, str(exc)))
-        finally:
-            q.put(_DONE)
+            return dict(value)
+        except Exception:
+            return {
+                "in_progress": getattr(value, "in_progress", None),
+                "completed": getattr(value, "completed", None),
+                "failed": getattr(value, "failed", None),
+                "cancelled": getattr(value, "cancelled", None),
+                "total": getattr(value, "total", None),
+            }
 
-    threading.Thread(target=lambda: asyncio.run(_consume()), daemon=True).start()
+    try:
+        vector_stores = client.vector_stores.list()
+        data_list = []
+        for vs in vector_stores.data:
+            data_list.append({
+                "id": vs.id,
+                "name": getattr(vs, "name", "Unnamed Vector Store"),
+                "status": getattr(vs, "status", "unknown"),
+                "created_at": getattr(vs, "created_at", None),
+                "file_counts": _as_plain_dict(getattr(vs, "file_counts", {}))
+            })
+        return jsonify({"data": data_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    # Emit periodic heartbeat events so proxies/clients keep the stream open on long-running tasks.
-    while True:
+@app.post("/vector_stores")
+def create_vector_store():
+    """Create a new vector store."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "New Vector Store")
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    try:
+        vs = client.vector_stores.create(name=name)
+        return jsonify({
+            "id": vs.id,
+            "name": vs.name,
+            "status": vs.status,
+            "created_at": vs.created_at
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.delete("/vector_stores")
+def delete_vector_store():
+    """Delete a vector store."""
+    vs_id = request.args.get("vector_store_id")
+    if not vs_id:
+        return jsonify({"error": "Missing vector_store_id parameter"}), 400
+
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    try:
+        deleted_vs = client.vector_stores.delete(vector_store_id=vs_id)
+        return jsonify({
+            "id": deleted_vs.id,
+            "deleted": deleted_vs.deleted
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ================================
+# END VECTOR STORES MANAGEMENT
+# ================================
+
+@app.post("/add_to_vs")
+def add_to_vs():
+    """Accepts multipart/form-data with a file field named 'file'. Optional form field
+    'vector_store_id' can override the env VAR VECTOR_STORE_ID. Returns JSON status.
+    """
+    if "file" not in request.files:
+        return {"error": "No file part in request (expected field 'file')."}, 400
+
+    f = request.files.get("file")
+    if f.filename == "":
+        return {"error": "Empty filename."}, 400
+
+    vs_id = request.form.get("vector_store_id") or os.environ.get("VECTOR_STORE_ID")
+
+    # Save to a temporary file
+    tmp = None
+    try:
+        filename = secure_filename(f.filename)
+        suffix = os.path.splitext(filename)[1]
+        print(f"Saving uploaded file to temp file with suffix {suffix}")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        f.save(tmp.name)
+        tmp.close()
+
+        result = vector_store.attach(tmp.name, vector_store_id=vs_id)
+        return jsonify({"status": "ok", "file": filename, "vector_store_id": vs_id, "result": str(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
         try:
-            item = q.get(timeout=HEARTBEAT_INTERVAL_SECONDS)
-        except queue.Empty:
-            yield _sse({"response": "", "tool_calls": []}, event="heartbeat")
-            continue
-        if item is _DONE:
-            yield _sse({"response": "", "tool_calls": []}, event="done")
-            break
-        if isinstance(item, tuple) and item[0] is _ERROR:
-            yield _sse({"response": str(item[1]), "tool_calls": []}, event="error")
-            break
-        yield _sse(item)
+            if tmp is not None:
+                os.unlink(tmp.name)
+        except Exception:
+            pass
 
 
 @app.post("/ask")
@@ -82,17 +171,36 @@ def ask_agent() -> Response | tuple[dict, int]:
     if not isinstance(llm_provider, str) or not llm_provider.strip():
         return {"error": "Field 'llm_provider' must be a non-empty string."}, 400
 
+    vs_id = data.get("vector_store_id")
+
     try:
+        # Búsqueda avanzada en el Vector Store
+        rag_info = vector_store.search_vs(question.strip(), vector_store_id=vs_id)
+        rag_context = rag_info.get("context", "")
+        rag_filenames = rag_info.get("filenames", [])
+        
+        augmented_question = question.strip()
+        
+        if rag_context:
+            augmented_question = (
+                f"Contexto del Vector Store con información relevante para responder:\n"
+                f"### COMIENZO DEL CONTEXTO ###\n"
+                f"{rag_context}\n"
+                f"### FIN DEL CONTEXTO ###\n\n"
+                f"Pregunta del usuario: {question.strip()}\n"
+                f"Responde basándote en el contexto anterior. Si no está la información en el contexto o en tu base de conocimientos general sobre SAP, indícalo educadamente."
+            )
+
         orchestrator = build_orchestrator(
             llm_provider=llm_provider.strip().lower(),
             model_name=model.strip(),
         )
     except ValueError as exc:
-        return {"error": str(exc)}, 400
+        return jsonify({"error": str(exc)}), 400
 
     if stream:
         return Response(
-            stream_with_context(_stream_generator(question.strip(), orchestrator)),
+            stream_with_context(_rag_stream_generator(rag_filenames, augmented_question, orchestrator, run_agent_streaming)),
             content_type="text/event-stream",
             headers={
                 "X-Accel-Buffering": "no",
@@ -101,9 +209,177 @@ def ask_agent() -> Response | tuple[dict, int]:
             },
         )
 
-    result = asyncio.run(run_agent(question.strip(), orchestrator))
+    result = asyncio.run(run_agent(augmented_question, orchestrator))
+    # In non-streaming, we can prepend a "fake" tool call to the history or metadata if needed, 
+    # but the user asked to show it in the component which usually reacts to tool_calls events.
+    if rag_filenames and isinstance(result, dict):
+        # Si el resultado es un dict, podemos inyectar la info de RAG para que el front la procese
+        result["rag_files"] = rag_filenames
+        
     return jsonify(result)
 
+
+@app.get("/search_vs")
+def search_vs_endpoint(query: str = "all files"):
+    """
+    Endpoint para listar y buscar archivos en el Vector Store.
+    Retorna la estructura de datos compatible con el popover 'Files Context'.
+    """
+    from tools.vector_store import search_vs
+    import os
+
+    # Realiza la búsqueda para obtener los resultados reales (score, file_id, etc)
+    # Por defecto, la función search_vs retorna context y filenames.
+    # Necesitamos modificarla o llamar directamente a la lógica de OpenAI para más detalle si se requiere.
+    # De momento retornamos los metadatos de búsqueda.
+    
+    # En un caso real, esto llamaría a vector_stores.search y retornaría el objeto 'data' crudo
+    # pero siguiendo el flujo actual del backend:
+    from openai import OpenAI
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    vs_id = request.args.get("vector_store_id") or os.environ.get("VECTOR_STORE_ID")
+    
+    try:
+        # 1. Listamos todos los archivos asociados al Vector Store
+        vs_files = client.vector_stores.files.list(
+            vector_store_id=vs_id
+        )
+        
+        data_list = []
+        # 2. Para cada archivo listado, recuperamos sus detalles específicos (como el filename que no viene en list)
+        for vs_file in vs_files.data:
+            try:
+                # Retrieve individual file details
+                file_details = client.vector_stores.files.retrieve(
+                    vector_store_id=vs_id,
+                    file_id=vs_file.id
+                )
+                
+                # Intentamos obtener el nombre real del archivo desde la API de archivos general si no está en vs_file
+                # OpenAI a veces no incluye el filename en el objeto vector_store.file
+                fname = "Archivo sin nombre"
+                try:
+                    file_info = client.files.retrieve(vs_file.id)
+                    fname = getattr(file_info, "filename", fname)
+                except:
+                    pass
+
+                data_list.append({
+                    "file_id": vs_file.id,
+                    "filename": fname,
+                    "score": "N/A (Listado)", # En el listado general no hay score de búsqueda
+                    "status": getattr(file_details, "status", "unknown"),
+                    "created_at": getattr(file_details, "created_at", None)
+                })
+            except Exception as e_inner:
+                print(f"Error recuperando archivo {vs_file.id}: {e_inner}")
+
+        return {"data": data_list}
+    except Exception as e:
+        return {"data": [], "error": str(e)}
+
+@app.get("/get_vs_file_details")
+def get_vs_file_details():
+    """
+    Endpoint para obtener los detalles de un archivo específico del Vector Store
+    utilizando client.vector_stores.files.retrieve.
+    """
+    file_id = request.args.get("file_id")
+    if not file_id:
+        return {"error": "Missing file_id parameter"}, 400
+
+    from openai import OpenAI
+    import os
+    
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    vs_id = request.args.get("vector_store_id") or os.environ.get("VECTOR_STORE_ID")
+    
+    try:
+        # Recupera los detalles específicos del archivo
+        file_details = client.vector_stores.files.retrieve(
+            vector_store_id=vs_id,
+            file_id=file_id
+        )
+        
+        # Retornamos los detalles serializables
+        return {
+            "id": getattr(file_details, "id", file_id),
+            "object": getattr(file_details, "object", "vector_store.file"),
+            "created_at": getattr(file_details, "created_at", None),
+            "vector_store_id": getattr(file_details, "vector_store_id", vs_id),
+            "status": getattr(file_details, "status", "unknown"),
+            "last_error": getattr(file_details, "last_error", None),
+            # Algunos campos pueden estar anidados o ser objetos de la SDK
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/get_vs_file_content")
+def get_vs_file_content():
+    """
+    Endpoint para descargar el contenido de un archivo del Vector Store.
+    Usa client.vector_stores.files.content para obtener el texto.
+    """
+    file_id = request.args.get("file_id")
+    if not file_id:
+        return {"error": "Missing file_id parameter"}, 400
+
+    from openai import OpenAI
+    import os
+    
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    vs_id = request.args.get("vector_store_id") or os.environ.get("VECTOR_STORE_ID")
+    
+    try:
+        # Recupera el contenido del archivo procesado en el Vector Store
+        # Note: .content returns a generator/iterator of pages
+        content_response = client.vector_stores.files.content(
+            vector_store_id=vs_id,
+            file_id=file_id
+        )
+        
+        full_text = ""
+        # Iteramos sobre las páginas de contenido (vector_store.file.content)
+        for page in content_response:
+            if hasattr(page, "text") and page.text:
+                full_text += page.text
+            elif isinstance(page, dict) and "text" in page:
+                 full_text += page["text"]
+        
+        return {
+            "file_id": file_id,
+            "content": full_text
+        }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.delete("/delete_vs_file")
+def delete_vs_file():
+    """
+    Endpoint para eliminar un archivo del Vector Store.
+    """
+    file_id = request.args.get("file_id")
+    if not file_id:
+        return {"error": "Missing file_id parameter"}, 400
+
+    from openai import OpenAI
+    import os
+    
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    vs_id = request.args.get("vector_store_id") or os.environ.get("VECTOR_STORE_ID")
+    
+    try:
+        deleted_file = client.vector_stores.files.delete(
+            vector_store_id=vs_id,
+            file_id=file_id
+        )
+        return jsonify({
+            "status": "deleted",
+            "file_id": file_id,
+            "details": str(deleted_file)
+        })
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
