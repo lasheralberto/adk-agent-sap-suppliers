@@ -4,11 +4,11 @@ import pathlib
 from dotenv import load_dotenv
 from google.adk.skills import load_skill_from_dir
 from google.adk.models.lite_llm import LiteLlm
-from tools.sandbox.sandbox_gcp_tool import LOCATION, PROJECT_ID
+from agent.tools.sandbox.sandbox_gcp_tool import LOCATION, PROJECT_ID
 
 load_dotenv()
 
-_SKILLS_DIR = pathlib.Path(__file__).parent.parent.parent / "skills"
+_SKILLS_DIR = pathlib.Path(__file__).parent.parent / "skills"
 
 
 def _configure_vertex_backend() -> None:

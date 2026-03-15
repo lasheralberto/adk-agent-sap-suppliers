@@ -1,9 +1,9 @@
 import asyncio
 import sys
-
 from google.adk.agents import LlmAgent
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
+
 from agent.runner import run_agent
 from agent.config.config import (
     get_llm_provider,
@@ -18,14 +18,14 @@ from agent.config.config import (
     fi_agent_skill,
     sap_technical_skill,
 )
-from tools.sandbox import (
+from agent.tools.sandbox import (
     generate_script,
     run_in_sandbox_gcp,
     execute_inline_script,
     execute_project_script,
     list_project_scripts,
 )
-from tools.memory import retrieve_memory_context, save_interaction_memory
+from agent.tools.memory import retrieve_memory_context, save_interaction_memory
 
 
 def build_orchestrator(llm_provider: str | None = None, model_name: str | None = None) -> LlmAgent:

@@ -12,8 +12,8 @@ from openai import OpenAI
 
 from agent.app import build_orchestrator
 from agent.runner import run_agent, run_agent_streaming
-from tools.vectors import vector_store
-from service.stream_utils import _sse, _stream_generator, _rag_stream_generator
+from agent.tools.vectors import vector_store
+from agent.service.stream_utils import _sse, _stream_generator, _rag_stream_generator
 
 app = Flask(__name__)
 CORS(app)
@@ -299,36 +299,6 @@ async def vectorize_text():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-            try:
-                # Retrieve individual file details
-                file_details = client.vector_stores.files.retrieve(
-                    vector_store_id=vs_id,
-                    file_id=vs_file.id
-                )
-                
-                # Intentamos obtener el nombre real del archivo desde la API de archivos general si no está en vs_file
-                # OpenAI a veces no incluye el filename en el objeto vector_store.file
-                fname = "Archivo sin nombre"
-                try:
-                    file_info = client.files.retrieve(vs_file.id)
-                    fname = getattr(file_info, "filename", fname)
-                except:
-                    pass
-
-                data_list.append({
-                    "file_id": vs_file.id,
-                    "filename": fname,
-                    "score": "N/A (Listado)", # En el listado general no hay score de búsqueda
-                    "status": getattr(file_details, "status", "unknown"),
-                    "created_at": getattr(file_details, "created_at", None)
-                })
-            except Exception as e_inner:
-                print(f"Error recuperando archivo {vs_file.id}: {e_inner}")
-
-        return {"data": data_list}
-    except Exception as e:
-        return {"data": [], "error": str(e)}
 
 @app.get("/get_vs_file_details")
 def get_vs_file_details():
