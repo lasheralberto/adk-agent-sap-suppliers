@@ -5,18 +5,15 @@ import queue
 import tempfile
 import threading
 from typing import Generator
-
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from openai import OpenAI
 
 from agent.app import build_orchestrator
 from agent.runner import run_agent, run_agent_streaming
-from tools import vector_store
+from tools.vectors import vector_store
 from service.stream_utils import _sse, _stream_generator, _rag_stream_generator
-
-
-from openai import OpenAI
 
 app = Flask(__name__)
 CORS(app)
@@ -248,6 +245,61 @@ def search_vs_endpoint(query: str = "all files"):
         data_list = []
         # 2. Para cada archivo listado, recuperamos sus detalles específicos (como el filename que no viene en list)
         for vs_file in vs_files.data:
+            file_details = client.files.retrieve(vs_file.id)
+            data_list.append({
+                "id": vs_file.id,
+                "name": file_details.filename,
+                "status": vs_file.status,
+                "created_at": vs_file.created_at,
+                "usage_bytes": vs_file.usage_bytes
+            })
+        return jsonify({"data": data_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/vectorize")
+async def vectorize_text():
+    """
+    Endpoint asíncrono para vectorizar un texto usando LangExtract y un provider de vectores.
+    Cuerpo esperado (JSON):
+    {
+      "text": "Texto a procesar",
+      "provider": "pinecone" (opcional, default pinecone),
+      "model_id": "gpt-4o-mini" (opcional),
+      "api_key": "sk-..." (opcional)
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    text = data.get("text")
+    provider = data.get("provider", "pinecone")
+    model_id = data.get("model_id", "gpt-4o-mini")
+    api_key = data.get("api_key")
+
+    if not text or not isinstance(text, str):
+        return jsonify({"error": "Field 'text' is required and must be a string."}), 400
+
+    try:
+        # Ejecutamos la extracción y vectorización en un hilo aparte para no bloquear el loop asíncrono
+        # si la librería langextract o el provider no son nativamente asíncronos.
+        loop = asyncio.get_event_loop()
+        extraction = await loop.run_in_executor(
+            None, 
+            vector_store.extract_and_vectorize, 
+            text, 
+            provider, 
+            model_id, 
+            api_key
+        )
+        
+        return jsonify({
+            "status": "ok",
+            "provider": provider,
+            "extraction": extraction
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
             try:
                 # Retrieve individual file details
                 file_details = client.vector_stores.files.retrieve(

@@ -2,8 +2,7 @@ import json
 import pathlib
 import re
 from difflib import SequenceMatcher
-
-from tools.sandbox_gcp_tool import run_in_sandbox_gcp
+from tools.sandbox.sandbox_gcp_tool import run_in_sandbox_gcp
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILLS_DIR = PROJECT_ROOT / "skills"

@@ -4,7 +4,7 @@ import pathlib
 from dotenv import load_dotenv
 from google.adk.skills import load_skill_from_dir
 from google.adk.models.lite_llm import LiteLlm
-from tools.sandbox_gcp_tool import LOCATION, PROJECT_ID
+from tools.sandbox.sandbox_gcp_tool import LOCATION, PROJECT_ID
 
 load_dotenv()
 

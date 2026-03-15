@@ -1,7 +1,7 @@
 import json
 from typing import Any, Optional
 
-from tools.memory.providers.in_memory import InMemoryProvider
+from .in_memory import InMemoryProvider
 
 
 class RedisProvider:

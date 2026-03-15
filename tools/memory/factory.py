@@ -3,10 +3,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from tools.memory.interface import IMemoryProvider
-from tools.memory.providers.in_memory import InMemoryProvider
-from tools.memory.providers.openai_provider import OpenAIProvider
-from tools.memory.providers.redis_provider import RedisProvider
-from tools.memory.providers.sqlite_provider import SQLiteProvider
+from tools.vectors.providers import ProviderFactory
 
 
 _provider_instance: IMemoryProvider | None = None
@@ -45,32 +42,35 @@ def build_memory_provider(
 
     try:
         if selected in {"inmemory", "in-memory", "memory", "default"}:
-            _provider_instance = InMemoryProvider()
+            _provider_instance = ProviderFactory.get_provider("inmemory", {})
             return _provider_instance
 
         if selected in {"openai", "vector", "vector_store"}:
-            _provider_instance = OpenAIProvider(
-                api_key=_read_setting(settings, "OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"),
-                vector_store_id=_read_setting(settings, "VECTOR_STORE_ID") or os.getenv("VECTOR_STORE_ID"),
-                expires_after_days=_read_setting(settings, "MEMORY_EXPIRY_DAYS"),
-            )
+            cfg = {
+                "api_key": _read_setting(settings, "OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"),
+                "vector_store_id": _read_setting(settings, "VECTOR_STORE_ID") or os.getenv("VECTOR_STORE_ID"),
+                "expires_after_days": _read_setting(settings, "MEMORY_EXPIRY_DAYS"),
+            }
+            _provider_instance = ProviderFactory.get_provider("openai", cfg)
             return _provider_instance
 
         if selected == "redis":
-            _provider_instance = RedisProvider(
-                url=_read_setting(settings, "REDIS_URL") or os.getenv("REDIS_URL")
-            )
+            cfg = {
+                "url": _read_setting(settings, "REDIS_URL") or os.getenv("REDIS_URL")
+            }
+            _provider_instance = ProviderFactory.get_provider("redis", cfg)
             return _provider_instance
 
         if selected == "sqlite":
-            _provider_instance = SQLiteProvider(
-                db_path=_read_setting(settings, "SQLITE_MEMORY_DB_PATH")
+            cfg = {
+                "db_path": _read_setting(settings, "SQLITE_MEMORY_DB_PATH")
                 or os.getenv("SQLITE_MEMORY_DB_PATH")
                 or ":memory:",
-            )
+            }
+            _provider_instance = ProviderFactory.get_provider("sqlite", cfg)
             return _provider_instance
 
         raise ValueError(f"Unsupported memory provider: {selected}")
     except Exception:
-        _provider_instance = InMemoryProvider()
+        _provider_instance = ProviderFactory.get_provider("inmemory", {})
         return _provider_instance

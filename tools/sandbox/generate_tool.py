@@ -1,6 +1,5 @@
 import os
 import re
-
 from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI
