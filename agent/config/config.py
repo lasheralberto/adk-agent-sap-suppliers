@@ -51,6 +51,10 @@ def get_llm_provider(llm_provider: str | None = None, model_name: str | None = N
     if len(provider_parts) > 1 and not model_name:
         model_name = provider_parts[1].strip()
 
+    # Normalize a frequent typo: gpt-40 (forty) -> gpt-4o (four-o)
+    if isinstance(model_name, str) and model_name.strip().lower() == "gpt-40":
+        model_name = "gpt-4o"
+
     if provider == "google":
         api_key = os.getenv("GOOGLE_API_KEY", "")
         if api_key:
@@ -60,9 +64,13 @@ def get_llm_provider(llm_provider: str | None = None, model_name: str | None = N
         model = LiteLlm(model=selected_model)
     elif provider == "openai":
         api_key = os.getenv("OPENAI_API_KEY", "")
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
-            print("Using OPENAI_API_KEY from environment variable.")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY is required when llm_provider is openai. "
+                "Set OPENAI_API_KEY as an environment variable in Cloud Run."
+            )
+        os.environ["OPENAI_API_KEY"] = api_key
+        print("Using OPENAI_API_KEY from environment variable.")
         selected_model = (model_name or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo").strip()
         model = LiteLlm(model=selected_model)
     elif provider == "azure":
