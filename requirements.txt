@@ -8,4 +8,4 @@ litellm
 openai
 gunicorn
 google-adk
-pinecone
+pinecone==8.1.0
