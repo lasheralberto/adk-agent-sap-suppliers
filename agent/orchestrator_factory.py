@@ -12,10 +12,7 @@ from agent.config.config import (
     script_generator_skill,
     memory_agent_skill,
     intent_router_skill,
-    sd_agent_skill,
-    fi_agent_skill,
-    sap_technical_skill,
-    cloudification_skill,
+    suppliers_skill,
 )
 from agent.tools.sandbox import (
     generate_script,
@@ -24,7 +21,8 @@ from agent.tools.sandbox import (
     execute_project_script,
     list_project_scripts,
 )
-from agent.tools.mcp.sap_cloudification_tools import build_cloudification_agent
+ 
+from agent.tools.mcp.sap_suppliers_tools import prepare_suppliers_query
 from agent.tools.memory import retrieve_memory_context, save_interaction_memory
 
 
@@ -37,23 +35,28 @@ def build_orchestrator(llm_provider: str | None = None, model_name: str | None =
         model=selected_model,
         instruction=intent_router_skill.instructions,
     )
- 
-    cloudification_agent = build_cloudification_agent(model=selected_model, skill=cloudification_skill)
-
+  
     answer_agent = LlmAgent(
         name="answer_agent",
         model=selected_model,
         instruction=answer_agent_skill.instructions
     )
 
+    suppliers_agent = LlmAgent(
+        name="suppliers_agent",
+        model=selected_model,
+        instruction=suppliers_skill.instructions,
+        tools=[prepare_suppliers_query],
+    )
+
     return LlmAgent(
         name="orchestrator",
         model=selected_model,
         instruction=orchestrator_skill.instructions,
+        #sub_agents=[intent_router, answer_agent, suppliers_agent]
         tools=[
             AgentTool(agent=intent_router),
-            # AgentTool(agent=code_programmer),
-            AgentTool(agent=cloudification_agent),
+            AgentTool(agent=suppliers_agent),
             AgentTool(agent=answer_agent),
         ],
     )

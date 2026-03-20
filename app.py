@@ -17,6 +17,7 @@ from agent.service.stream_utils import _sse, _stream_generator, _rag_stream_gene
 
 app = Flask(__name__)
 CORS(app)
+ASK_TIMEOUT_SECONDS = int(os.getenv("ASK_TIMEOUT_SECONDS", "240"))
 
 
 @app.get("/health")
@@ -223,7 +224,14 @@ def ask_agent() -> Response | tuple[dict, int]:
             },
         )
 
-    result = asyncio.run(run_agent(augmented_question, orchestrator))
+    try:
+        result = asyncio.run(asyncio.wait_for(run_agent(augmented_question, orchestrator), timeout=ASK_TIMEOUT_SECONDS))
+    except TimeoutError:
+        return jsonify({
+            "error": "Request timed out while processing /ask.",
+            "timeout_seconds": ASK_TIMEOUT_SECONDS,
+            "hint": "Try stream=true or simplify the request.",
+        }), 504
     # In non-streaming, we can prepend a "fake" tool call to the history or metadata if needed, 
     # but the user asked to show it in the component which usually reacts to tool_calls events.
     if rag_filenames and isinstance(result, dict):

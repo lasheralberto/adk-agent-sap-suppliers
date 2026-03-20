@@ -33,10 +33,7 @@ generic_scripts_skill = load_skill_from_dir(_SKILLS_DIR / "script-execution")
 script_generator_skill = load_skill_from_dir(_SKILLS_DIR / "script-generator")
 memory_agent_skill = load_skill_from_dir(_SKILLS_DIR / "memory-agent")
 intent_router_skill = load_skill_from_dir(_SKILLS_DIR / "intent-router")
-sd_agent_skill = load_skill_from_dir(_SKILLS_DIR / "sd-agent")
-fi_agent_skill = load_skill_from_dir(_SKILLS_DIR / "fi-agent")
-sap_technical_skill = load_skill_from_dir(_SKILLS_DIR / "sap-technical-agent")
-cloudification_skill = load_skill_from_dir(_SKILLS_DIR / "cloudification-agent")
+suppliers_skill = load_skill_from_dir(_SKILLS_DIR / "suppliers-agent")
 
 def get_llm_provider(llm_provider: str | None = None, model_name: str | None = None) -> LiteLlm:
     # Prefer the explicit parameter `llm_provider` (used when called from /ask).
@@ -48,6 +45,7 @@ def get_llm_provider(llm_provider: str | None = None, model_name: str | None = N
     # Support combined format 'provider/model' (e.g. 'openai/gpt-4o')
     provider_parts = provider_raw.split("/", 1)
     provider = provider_parts[0].strip().lower()
+    os.environ["LLM_PROVIDER"] = provider
     if len(provider_parts) > 1 and not model_name:
         model_name = provider_parts[1].strip()
 

@@ -1,10 +1,13 @@
 import uuid
 import json
+import re
+import os
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from agent.tools.sandbox.script_execution_tool import maybe_execute_matching_script
+from agent.tools.mcp.sap_suppliers_tools import build_suppliers_query_payload
 
 
 APP_NAME = "multi_agent_executor"
@@ -268,6 +271,195 @@ def _extract_tool_output_events(content: object, event: object | None = None) ->
     return outputs
 
 
+def _extract_query_object_from_payload(payload: object) -> object | None:
+    parsed = _try_parse_json_like(payload)
+
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("query"), (dict, list, str)):
+            return parsed.get("query")
+        if "field" in parsed and "args" in parsed:
+            return parsed
+
+    return None
+
+
+def _extract_query_from_json_text(json_text: str) -> object | None:
+    try:
+        parsed = json.loads(json_text)
+    except Exception:
+        return None
+
+    return _extract_query_object_from_payload(parsed)
+
+
+def _extract_query_from_response_text(response_text: str) -> tuple[str, object | None]:
+    if not response_text:
+        return response_text, None
+
+    cleaned_response = response_text
+    query_value: object | None = None
+
+    fenced_candidates = list(
+        re.finditer(r"```json\s*(\{[\s\S]*?\})\s*```", response_text, flags=re.IGNORECASE)
+    )
+    for match in fenced_candidates:
+        candidate = match.group(1)
+        extracted = _extract_query_from_json_text(candidate)
+        if extracted is None:
+            continue
+        query_value = extracted
+        cleaned_response = cleaned_response.replace(match.group(0), "").strip()
+        break
+
+    if query_value is None:
+        stripped = response_text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            extracted = _extract_query_from_json_text(stripped)
+            if extracted is not None:
+                query_value = extracted
+                cleaned_response = ""
+
+    cleaned_response = re.sub(r"\n{3,}", "\n\n", cleaned_response).strip()
+    return cleaned_response, query_value
+
+
+def _extract_query_events(content: object, event: object | None = None) -> list[object]:
+    if not content or not getattr(content, "parts", None):
+        return []
+
+    queries: list[object] = []
+    for part in content.parts:
+        function_response = getattr(part, "function_response", None)
+        if not function_response:
+            continue
+
+        tool_name = str(_to_plain_value(getattr(function_response, "name", None)) or "")
+        if tool_name != "prepare_suppliers_query":
+            continue
+
+        raw_output = (
+            _to_plain_value(getattr(function_response, "response", None))
+            or _to_plain_value(getattr(function_response, "output", None))
+            or _to_plain_value(getattr(function_response, "result", None))
+            or _to_plain_value(getattr(function_response, "content", None))
+        )
+        query_value = _extract_query_object_from_payload(raw_output)
+        if query_value is not None:
+            queries.append(query_value)
+
+    return queries
+
+
+def _is_suppliers_agent_call(call: dict[str, object]) -> bool:
+    return str(call.get("tool", "")) == "suppliers_agent"
+
+
+def _extract_request_from_call(call: dict[str, object], fallback_request: str = "") -> str:
+    args = call.get("args")
+    if isinstance(args, dict):
+        request = args.get("request")
+        if isinstance(request, str) and request.strip():
+            return request.strip()
+    return (fallback_request or "").strip()
+
+
+def _normalize_query_for_call_args(query_value: object) -> dict[str, object] | None:
+    parsed = _try_parse_json_like(query_value)
+    if not isinstance(parsed, dict):
+        return None
+
+    if "query" in parsed and isinstance(parsed.get("query"), dict):
+        parsed = parsed["query"]
+        if not isinstance(parsed, dict):
+            return None
+
+    top_field = str(parsed.get("field", "")).strip().upper()
+    raw_args = parsed.get("args")
+    if not isinstance(raw_args, list) or not raw_args:
+        return None
+
+    normalized_items: list[dict[str, object]] = []
+    for item in raw_args:
+        if not isinstance(item, dict):
+            continue
+        normalized_item: dict[str, object] = {
+            "low": item.get("low", ""),
+            "option": item.get("option", "EQ"),
+            "sign": item.get("sign", "I"),
+        }
+
+        raw_limit = item.get("limit")
+        if isinstance(raw_limit, str) and raw_limit.strip().isdigit():
+            raw_limit = int(raw_limit.strip())
+        if isinstance(raw_limit, int) and raw_limit > 0:
+            normalized_item["limit"] = raw_limit
+
+        item_field = str(item.get("field", "")).strip().upper()
+        if item_field:
+            normalized_item["field"] = item_field
+        elif top_field:
+            normalized_item["field"] = top_field
+
+        normalized_items.append(normalized_item)
+
+    if not normalized_items:
+        return None
+
+    return {"args": normalized_items}
+
+
+def _build_query_for_request(request_text: str) -> dict[str, object] | None:
+    if not request_text or not request_text.strip():
+        return None
+
+    infer_with_llm = os.getenv("SUPPLIERS_RUNNER_INFERENCE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    provider_for_inference = os.getenv("LLM_PROVIDER") if infer_with_llm else ""
+
+    try:
+        payload = build_suppliers_query_payload(
+            question=request_text.strip(),
+            llm_provider=provider_for_inference,
+        )
+    except Exception:
+        return None
+
+    return _normalize_query_for_call_args(payload.get("query"))
+
+
+def _inject_query_into_suppliers_calls(
+    tool_calls: list[dict[str, object]],
+    query_value: object | None,
+    fallback_request: str = "",
+) -> bool:
+    injected = False
+
+    for call in tool_calls:
+        if not _is_suppliers_agent_call(call):
+            continue
+
+        args = call.get("args")
+        if not isinstance(args, dict):
+            args = {}
+
+        request_text = _extract_request_from_call(call, fallback_request)
+        if request_text:
+            args["request"] = request_text
+
+        normalized_query = _normalize_query_for_call_args(query_value)
+        if normalized_query is None:
+            normalized_query = _build_query_for_request(request_text)
+
+        if normalized_query is None:
+            call["args"] = args
+            continue
+
+        args["query"] = normalized_query
+        call["args"] = args
+        injected = True
+
+    return injected
+
+
 def _try_parse_json_like(value: object) -> object:
     if isinstance(value, (dict, list)):
         return value
@@ -381,6 +573,7 @@ async def _run_once(message_text: str, session_id: str, agent: object) -> dict[s
 
     last_text = ""
     tool_calls: list[dict[str, object]] = []
+    query_value: object | None = None
     async for event in runner.run_async(
         user_id=USER_ID,
         session_id=session_id,
@@ -388,16 +581,29 @@ async def _run_once(message_text: str, session_id: str, agent: object) -> dict[s
     ):
         _append_unique_tool_calls(tool_calls, _extract_tool_calls(event.content, event))
 
+        for item in _extract_query_events(event.content, event):
+            query_value = item
+
         current_text = _extract_text(event.content)
         if current_text:
-            last_text = current_text
+            cleaned_current_text, query_from_text = _extract_query_from_response_text(current_text)
+            last_text = cleaned_current_text
+            if query_from_text is not None:
+                query_value = query_from_text
 
         if event.is_final_response():
             final_text = _extract_text(event.content)
             if final_text:
-                return {"response": final_text, "tool_calls": tool_calls}
+                cleaned_final_text, query_from_text = _extract_query_from_response_text(final_text)
+                if query_from_text is not None:
+                    query_value = query_from_text
+                _inject_query_into_suppliers_calls(tool_calls, query_value, message_text)
+                result = {"response": cleaned_final_text, "tool_calls": tool_calls}
+                return result
 
-    return {"response": last_text, "tool_calls": tool_calls}
+    _inject_query_into_suppliers_calls(tool_calls, query_value, message_text)
+    result = {"response": last_text, "tool_calls": tool_calls}
+    return result
 
 
 async def stream_agent(question: str, agent: object):
@@ -454,6 +660,7 @@ async def run_agent_streaming(question: str, agent: object):
 
         last_full_text = ""
         tool_calls: list[dict[str, object]] = []
+        query_value: object | None = None
         async for event in runner.run_async(
             user_id=USER_ID,
             session_id=session_id,
@@ -465,16 +672,28 @@ async def run_agent_streaming(question: str, agent: object):
                 tool_calls, _extract_tool_calls(event.content, event)
             )
             if added_calls:
-                payload["tool_calls"] = added_calls
+                payload["tool_calls"] = tool_calls
 
             score_events = _extract_tool_score_events(event.content, event)
             if score_events:
                 payload["score"] = score_events[-1].get("score")
 
+            query_events = _extract_query_events(event.content, event)
+            if query_events:
+                query_value = query_events[-1]
+
             full_text = _extract_text(event.content)
-            delta = _extract_delta(full_text, last_full_text)
+            cleaned_full_text, query_from_text = _extract_query_from_response_text(full_text)
+            if query_from_text is not None:
+                query_value = query_from_text
+
+            injected_query = _inject_query_into_suppliers_calls(tool_calls, query_value, message_text)
+            if injected_query:
+                payload["tool_calls"] = tool_calls
+
+            delta = _extract_delta(cleaned_full_text, last_full_text)
             if delta:
-                last_full_text = full_text
+                last_full_text = cleaned_full_text
                 payload["response"] = delta
 
             if not payload:
